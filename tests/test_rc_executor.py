@@ -131,6 +131,19 @@ def test_extract_yaml_block_variants(text: str, expected: str) -> None:
     assert rc_executor._extract_yaml_block(text) == expected
 
 
+def test_parse_experiment_plan_yaml_handles_bare_language_tag_line() -> None:
+    text = (
+        "yaml\n"
+        "objectives:\n"
+        "  - test objective\n"
+        "datasets:\n"
+        "  - demo_ds\n"
+    )
+    parsed = rc_executor._parse_experiment_plan_yaml(text)
+    assert isinstance(parsed, dict)
+    assert parsed.get("objectives") == ["test objective"]
+
+
 @pytest.mark.parametrize(
     ("payload", "default", "expected"),
     [

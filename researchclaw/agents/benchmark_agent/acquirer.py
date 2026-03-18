@@ -8,7 +8,9 @@ Produces three outputs consumed by the code generation stage:
 
 from __future__ import annotations
 
+import ast
 import logging
+import re
 from typing import Any
 
 from researchclaw.agents.base import AgentStepResult, BaseAgent
@@ -210,7 +212,7 @@ class AcquirerAgent(BaseAgent):
 
     @staticmethod
     def _strip_fences(code: str) -> str:
-        """Remove markdown code fences if present."""
+        """Remove a single wrapping markdown code fence if present."""
         code = code.strip()
         if code.startswith("```"):
             # Remove opening fence
@@ -219,6 +221,56 @@ class AcquirerAgent(BaseAgent):
         if code.endswith("```"):
             code = code[:-3].rstrip()
         return code
+
+    @staticmethod
+    def _clean_python_output(text: str) -> str:
+        """Extract the most likely Python code from LLM output.
+
+        Prefers syntactically valid snippets when prose or fences are present.
+        """
+        raw = text.strip()
+        if not raw:
+            return ""
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def _add(candidate: str) -> None:
+            c = candidate.strip()
+            if not c or c in seen:
+                return
+            seen.add(c)
+            candidates.append(c)
+
+        _add(AcquirerAgent._strip_fences(raw))
+        _add(raw)
+
+        # Collect fenced python blocks if the model mixed prose and code.
+        fenced = re.findall(
+            r"```(?:python|py)?\s*\n(.*?)```",
+            raw,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if fenced:
+            for block in fenced:
+                _add(block)
+            _add("\n\n".join(block.strip() for block in fenced if block.strip()))
+
+        # Some models emit a standalone language tag as the first line.
+        if candidates:
+            first = candidates[0].splitlines()
+            if first and first[0].strip().lower() in {"python", "py"}:
+                _add("\n".join(first[1:]))
+
+        for candidate in candidates:
+            try:
+                ast.parse(candidate)
+                return candidate
+            except SyntaxError:
+                continue
+
+        # Return the best-effort cleaned text; validator handles any residual errors.
+        return candidates[0] if candidates else raw
 
     # -- Main entry point --------------------------------------------------
 
@@ -241,7 +293,7 @@ class AcquirerAgent(BaseAgent):
 
         # 1. Generate data loading code
         self.logger.info("Generating data loading code for %d datasets", len(benchmarks))
-        data_loader_code = self._strip_fences(
+        data_loader_code = self._clean_python_output(
             self._generate_data_loader(benchmarks, topic)
         )
 
@@ -249,7 +301,7 @@ class AcquirerAgent(BaseAgent):
         baseline_code = ""
         if baselines:
             self.logger.info("Generating baseline code for %d methods", len(baselines))
-            baseline_code = self._strip_fences(
+            baseline_code = self._clean_python_output(
                 self._generate_baseline_code(baselines, benchmarks, topic)
             )
 

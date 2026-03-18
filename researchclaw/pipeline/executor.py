@@ -279,6 +279,70 @@ def _extract_yaml_block(text: str) -> str:
     return text.strip()
 
 
+def _strip_leading_yaml_language_tag(text: str) -> str:
+    """Remove a stray leading 'yaml' or 'yml' language tag line.
+
+    Some models emit:
+      yaml\nkey: value
+    without markdown fences, which breaks plain yaml.safe_load parsing.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+    lines = stripped.splitlines()
+    if lines and lines[0].strip().lower() in {"yaml", "yml"}:
+        return "\n".join(lines[1:]).strip()
+    return stripped
+
+
+def _parse_experiment_plan_yaml(text: str) -> dict[str, Any] | None:
+    """Parse experiment-plan YAML from noisy LLM output.
+
+    Tries multiple extraction strategies and returns the first dict payload.
+    """
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add_candidate(candidate: str) -> None:
+        normalized = _strip_leading_yaml_language_tag(candidate)
+        if not normalized:
+            return
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        candidates.append(normalized)
+
+    # Strategy 1: primary fenced extraction helper.
+    _add_candidate(_extract_yaml_block(text))
+    # Strategy 2: whole response.
+    _add_candidate(text)
+
+    # Strategy 3: explicit fenced YAML blocks.
+    for block in re.findall(r"```(?:yaml|yml)?\s*\n(.*?)```", text, flags=re.IGNORECASE | re.DOTALL):
+        _add_candidate(block)
+
+    # Strategy 4: tail from first likely top-level key.
+    key_re = re.compile(
+        r"^\s*(baselines|proposed_methods|ablations|datasets|"
+        r"metrics|objectives|risks|compute_budget)\s*:",
+        re.IGNORECASE,
+    )
+    lines = text.splitlines()
+    for idx, line in enumerate(lines):
+        if key_re.match(line):
+            _add_candidate("\n".join(lines[idx:]))
+            break
+
+    for candidate in candidates:
+        try:
+            parsed = yaml.safe_load(candidate)
+        except yaml.YAMLError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
 def _safe_json_loads(text: str, default: Any) -> Any:
     try:
         return json.loads(text)
@@ -2406,42 +2470,7 @@ def _execute_experiment_design(
             max_tokens=sp.max_tokens,
         )
         raw_yaml = _extract_yaml_block(resp.content)
-        try:
-            parsed = yaml.safe_load(raw_yaml)
-        except yaml.YAMLError:
-            parsed = None
-        # Fallback: reasoning models sometimes emit the YAML without fences
-        # or wrapped in prose. Try parsing the whole response as YAML.
-        if not isinstance(parsed, dict):
-            try:
-                parsed = yaml.safe_load(resp.content)
-            except yaml.YAMLError:
-                pass
-        # Last fallback: try to find any YAML-like dict in the response
-        if not isinstance(parsed, dict):
-            import re as _re_yaml
-
-            # Look for lines starting with known keys
-            _yaml_lines = []
-            _capturing = False
-            for line in resp.content.splitlines():
-                if _re_yaml.match(
-                    r"^(baselines|proposed_methods|ablations|datasets|"
-                    r"metrics|objectives|risks|compute_budget)\s*:",
-                    line,
-                ):
-                    _capturing = True
-                if _capturing:
-                    if line.strip() == "" or line.startswith("```"):
-                        continue
-                    if line.startswith("#") or line.startswith("**"):
-                        continue
-                    _yaml_lines.append(line)
-            if _yaml_lines:
-                try:
-                    parsed = yaml.safe_load("\n".join(_yaml_lines))
-                except yaml.YAMLError:
-                    pass
+        parsed = _parse_experiment_plan_yaml(resp.content)
         if isinstance(parsed, dict):
             plan = parsed
         else:
@@ -2469,13 +2498,10 @@ def _execute_experiment_design(
                     _retry_prompt,
                     max_tokens=4096,
                 )
-                try:
-                    _retry_parsed = yaml.safe_load(_retry_resp.content)
-                    if isinstance(_retry_parsed, dict):
-                        plan = _retry_parsed
-                        logger.info("Stage 09: Strict YAML retry succeeded.")
-                except yaml.YAMLError:
-                    pass
+                _retry_parsed = _parse_experiment_plan_yaml(_retry_resp.content)
+                if isinstance(_retry_parsed, dict):
+                    plan = _retry_parsed
+                    logger.info("Stage 09: Strict YAML retry succeeded.")
 
     # BUG-12: Fallback 4 — extract method/baseline names from Stage 8 hypotheses
     if plan is None:

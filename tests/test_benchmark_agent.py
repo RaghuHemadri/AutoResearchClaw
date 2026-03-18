@@ -316,6 +316,23 @@ class TestAcquirer:
         code = "```python\nimport torch\n```"
         assert AcquirerAgent._strip_fences(code) == "import torch"
 
+    def test_clean_python_output_prefers_valid_fenced_code(self) -> None:
+        from researchclaw.agents.benchmark_agent.acquirer import AcquirerAgent
+        raw = (
+            "Here is the baseline code:\n"
+            "```python\n"
+            "import torch.nn as nn\n"
+            "\n"
+            "def get_baselines(num_classes, device='cuda'):\n"
+            "    return {'mlp': nn.Linear(128, num_classes)}\n"
+            "```\n"
+            "Use it as needed."
+        )
+        cleaned = AcquirerAgent._clean_python_output(raw)
+        assert cleaned.startswith("import torch.nn as nn")
+        assert "def get_baselines" in cleaned
+        assert "Use it as needed." not in cleaned
+
     def test_execute_generates_code(self) -> None:
         from researchclaw.agents.benchmark_agent.acquirer import AcquirerAgent
         llm = FakeLLM([
