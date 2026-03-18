@@ -164,6 +164,36 @@ def test_parse_experiment_plan_yaml_recovers_from_unbalanced_quotes() -> None:
     assert parsed.get("baselines") == ["autoregressive_direct"]
 
 
+def test_check_main_execution_contract_flags_non_executable_script() -> None:
+    code = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass\n"
+        "class Config:\n"
+        "    lr: float = 1e-3\n"
+    )
+    issues = rc_executor._check_main_execution_contract(code, "primary_metric")
+    assert issues
+    assert any("entrypoint" in i for i in issues)
+
+
+def test_check_main_execution_contract_accepts_metric_emitting_entrypoint() -> None:
+    code = (
+        "import json\n"
+        "\n"
+        "def run():\n"
+        "    val = 0.42\n"
+        "    print(f'primary_metric: {val}')\n"
+        "    with open('results.json', 'w', encoding='utf-8') as f:\n"
+        "        json.dump({'metrics': {'primary_metric': val}}, f)\n"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    run()\n"
+    )
+    issues = rc_executor._check_main_execution_contract(code, "primary_metric")
+    assert issues == []
+
+
 @pytest.mark.parametrize(
     ("payload", "default", "expected"),
     [

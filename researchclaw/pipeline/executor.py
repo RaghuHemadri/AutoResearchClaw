@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import re
@@ -1262,6 +1263,62 @@ def _parse_metrics_from_stdout(stdout: str) -> dict[str, Any]:
         except (ValueError, TypeError):
             pass
     return metrics
+
+
+def _check_main_execution_contract(code: str, metric_key: str) -> list[str]:
+    """Validate that generated main.py is likely to execute and emit metrics.
+
+    This catches silent "configuration-only" files that parse but never run
+    experiment logic or print metrics.
+    """
+    issues: list[str] = []
+    text = code.strip()
+    if not text:
+        return ["main.py is empty"]
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        return [f"main.py has syntax error: {exc.msg}"]
+
+    # Detect executable top-level statements beyond definitions/imports.
+    has_top_level_exec = False
+    for node in tree.body:
+        if isinstance(
+            node,
+            (
+                ast.Expr,
+                ast.Assign,
+                ast.AnnAssign,
+                ast.AugAssign,
+                ast.If,
+                ast.For,
+                ast.While,
+                ast.With,
+                ast.Try,
+            ),
+        ):
+            has_top_level_exec = True
+            break
+
+    has_main_guard = "__name__" in text and "__main__" in text
+    if not has_top_level_exec and not has_main_guard:
+        issues.append(
+            "main.py has no executable entrypoint (no top-level execution and no if __name__ == '__main__')"
+        )
+
+    has_metric_signal = (
+        metric_key in text
+        or "report_metric(" in text
+        or "results.json" in text
+        or re.search(r"print\s*\(.*:\s*", text) is not None
+    )
+    if not has_metric_signal:
+        issues.append(
+            f"main.py does not appear to emit metric '{metric_key}' or write results.json"
+        )
+
+    return issues
 
 
 def _extract_code_block(content: str) -> str:
@@ -3180,6 +3237,49 @@ def _execute_code_generation(
             )
         }
 
+    # Guardrail: reject silent/non-executable main.py before validation loop.
+    _main_contract_issues = _check_main_execution_contract(
+        files.get("main.py", ""),
+        metric,
+    )
+    if _main_contract_issues and llm is not None:
+        logger.warning(
+            "Stage 10: main.py contract issues detected pre-validation: %s",
+            _main_contract_issues,
+        )
+        _all_files_ctx = "\n\n".join(
+            f"```filename:{f}\n{c}\n```" for f, c in files.items()
+        )
+        _contract_prompt = (
+            "Fix the project so main.py is executable and emits parseable metrics.\n"
+            f"Primary metric key: {metric}\n"
+            "Requirements:\n"
+            "- Include executable entrypoint in main.py (top-level run or if __name__ == '__main__').\n"
+            "- Print at least one line exactly in name:value style for the primary metric.\n"
+            "- Write results.json with a top-level 'metrics' dictionary containing the primary metric.\n"
+            "- Preserve scientific logic; do not replace with placeholder constants.\n"
+            "Return complete corrected files in ```filename:... format only.\n\n"
+            "Issues:\n"
+            + "\n".join(f"- {i}" for i in _main_contract_issues)
+            + "\n\nCurrent files:\n"
+            + _all_files_ctx
+        )
+        _contract_resp = _chat_with_prompt(
+            llm,
+            _pm.prompts["code_generation"]["system"],
+            _contract_prompt,
+            max_tokens=_code_max_tokens,
+        )
+        _contract_files = _extract_multi_file_blocks(_contract_resp.content)
+        if _contract_files and "main.py" in _contract_files:
+            files = _contract_files
+            _main_contract_issues = _check_main_execution_contract(files["main.py"], metric)
+            if _main_contract_issues:
+                logger.warning(
+                    "Stage 10: main.py still violates execution contract after repair: %s",
+                    _main_contract_issues,
+                )
+
     # --- Validate each file + auto-repair loop ---
     all_valid = True
     attempt = 0
@@ -4421,6 +4521,59 @@ def _execute_iterative_refine(
                 "stdout": _stdout_cap,
             }
             iter_record["metric"] = metric_val
+
+            # Detect silent-success runs: rc=0 but no stdout/stderr and no metrics.
+            _silent_no_metrics = (
+                rerun.returncode == 0
+                and metric_val is None
+                and not rerun.metrics
+                and not (rerun.stdout or "").strip()
+                and not (rerun.stderr or "").strip()
+            )
+            if _silent_no_metrics:
+                _silent_issue = (
+                    "Runtime produced no stdout and no metrics despite returncode=0. "
+                    "Ensure main.py actually executes experiment logic, prints metric lines "
+                    "as 'name: value', and writes results.json with a top-level metrics dict."
+                )
+                iter_record["runtime_issues"] = _silent_issue
+                logger.warning(
+                    "Stage 13 iteration %d: %s",
+                    iteration,
+                    _silent_issue,
+                )
+                rrp = _pm.sub_prompt(
+                    "iterative_repair",
+                    issue_text=_silent_issue,
+                    all_files_ctx=_files_to_context(candidate_files),
+                )
+                repair_resp = _chat_with_prompt(llm, rrp.system, rrp.user)
+                repaired_files = _extract_multi_file_blocks(repair_resp.content)
+                if not repaired_files:
+                    single = _extract_code_block(repair_resp.content)
+                    if single.strip():
+                        repaired_files = dict(candidate_files)
+                        repaired_files["main.py"] = single
+                if repaired_files:
+                    candidate_files = repaired_files
+                    _write_project(version_dir, candidate_files)
+                    sandbox2 = create_sandbox(
+                        config.experiment,
+                        stage_dir / f"refine_sandbox_v{iteration}_silentfix",
+                    )
+                    rerun2 = sandbox2.run_project(
+                        version_dir,
+                        timeout_sec=config.experiment.time_budget_sec,
+                    )
+                    metric_val = _find_metric(rerun2.metrics, metric_key)
+                    iter_record["sandbox_after_fix"] = {
+                        "returncode": rerun2.returncode,
+                        "metrics": rerun2.metrics,
+                        "elapsed_sec": rerun2.elapsed_sec,
+                        "timed_out": rerun2.timed_out,
+                    }
+                    iter_record["metric"] = metric_val
+                    iter_record["runtime_repaired"] = True
 
             # --- Track timeout in refine sandbox ---
             if rerun.timed_out:
