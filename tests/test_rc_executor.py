@@ -2481,6 +2481,30 @@ class TestExperimentHarness:
         assert "ExperimentHarness" in content
         assert "FAKE HARNESS" not in content
 
+    def test_run_project_recovers_metrics_from_results_json(self, tmp_path: Path) -> None:
+        import sys
+        from researchclaw.config import SandboxConfig
+        from researchclaw.experiment.sandbox import ExperimentSandbox
+
+        config = SandboxConfig(python_path=sys.executable)
+        sandbox = ExperimentSandbox(config, tmp_path / "sandbox")
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "main.py").write_text(
+            "import json\n"
+            "payload = {'metrics': {'primary_metric': 0.77, 'primary_metric_std': 0.05}}\n"
+            "with open('results.json', 'w', encoding='utf-8') as f:\n"
+            "    json.dump(payload, f)\n"
+            "print('run_complete: 1')\n",
+            encoding="utf-8",
+        )
+
+        result = sandbox.run_project(project, timeout_sec=5)
+        assert result.returncode == 0
+        assert result.metrics.get("primary_metric") == 0.77
+        assert result.metrics.get("primary_metric_std") == 0.05
+
     def test_prompt_mentions_harness(self) -> None:
         from researchclaw.prompts import PromptManager
 

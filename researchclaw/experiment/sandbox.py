@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -32,6 +33,49 @@ _CONDITION_METRIC_PATTERN = re.compile(
 _CONDITION_RATIO_PATTERN = re.compile(
     r"^condition=(\S+)\s+((?:\S+=\S+\s+)*)(\w[\w.]*)\s*:\s*(\d+)/(\d+)\s*$"
 )
+
+
+def _merge_results_json_metrics(metrics: dict[str, float], results_json_path: Path) -> dict[str, float]:
+    """Merge numeric metrics from results.json into parsed stdout metrics.
+
+    Accepts either:
+    - {"metrics": {...}} (preferred), or
+    - flat top-level numeric fields.
+    """
+    merged = dict(metrics)
+    if not results_json_path.exists():
+        return merged
+
+    try:
+        payload = json.loads(results_json_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return merged
+
+    if not isinstance(payload, dict):
+        return merged
+
+    def _try_add(name: str, value: object) -> None:
+        try:
+            fval = float(value)
+        except (TypeError, ValueError):
+            return
+        if math.isnan(fval) or math.isinf(fval):
+            return
+        merged.setdefault(name, fval)
+
+    nested = payload.get("metrics")
+    if isinstance(nested, dict):
+        for k, v in nested.items():
+            if isinstance(k, str):
+                _try_add(k, v)
+
+    for k, v in payload.items():
+        if k == "metrics":
+            continue
+        if isinstance(k, str):
+            _try_add(k, v)
+
+    return merged
 
 
 def _to_text(value: str | bytes | None) -> str:
@@ -325,6 +369,21 @@ class ExperimentSandbox:
         except Exception as exc:  # noqa: BLE001
             result = self._result_from_exception(
                 exc, elapsed_sec=time.monotonic() - start
+            )
+
+        # Merge structured results.json metrics (adds keys not present in stdout parsing).
+        merged = _merge_results_json_metrics(
+            result.metrics,
+            sandbox_project / "results.json",
+        )
+        if merged != result.metrics:
+            result = SandboxResult(
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                elapsed_sec=result.elapsed_sec,
+                metrics=merged,
+                timed_out=result.timed_out,
             )
 
         return result

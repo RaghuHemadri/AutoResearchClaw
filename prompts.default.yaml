@@ -74,23 +74,53 @@ stages:
     system: You are a computational scientist who writes real, runnable experiments. Your code implements actual algorithms
       with real mathematical operations. You NEVER fake results with random number generators. Always use the ```filename:xxx.py
       format for each file. Use numpy for numerical computation. Keep code self-contained and deterministic.
-    user: "Generate a Python experiment project for the following research topic:\nTOPIC: {topic}\n\nCRITICAL REQUIREMENTS\
-      \ — your code MUST satisfy ALL of these:\n1. Implement REAL algorithms (e.g., gradient descent, Adam, SGD, etc.)\n \
-      \  using numpy arrays — NOT random.uniform() loops that fake results.\n2. Define REAL objective/loss functions (e.g.,\
-      \ Rosenbrock, quadratic,\n   cross-entropy on synthetic data) with proper mathematical formulas.\n3. Run REAL optimization\
-      \ loops that compute gradients and update parameters.\n4. Collect REAL metrics (loss values, convergence rates) from\
-      \ the optimization.\n5. The code must be scientifically meaningful — a reviewer should see\n   actual algorithm implementations,\
-      \ not random number generators.\n\nOUTPUT FORMAT — return multiple files using this exact format:\n```filename:main.py\n\
-      # entry point code\n```\n\n```filename:optimizers.py\n# optimizer implementations\n```\n\nCODE STRUCTURE:\n- main.py:\
-      \ entry point that runs experiments and prints metrics\n- Additional modules for algorithms, objective functions, utilities\n\
-      - Primary metric key: {metric}\n- main.py must print metric lines as `name: value` (one per line)\n- main.py must ALSO\
-      \ write a `results.json` file with structured experiment results\n  (e.g. per-algorithm, per-function, per-dimension metrics\
-      \ as nested dicts/lists)\n- Use deterministic seeds (numpy.random.seed or random.seed)\n- No external data files, no\
-      \ network calls, no GPU required\n- FORBIDDEN: subprocess, os.system, eval, exec, shutil, socket\n- MUST implement convergence\
-      \ stopping criteria (e.g. stop when objective change < 1e-8 for\n  N consecutive iterations) — do NOT just run a fixed\
-      \ number of iterations\n{pkg_hint}\nANTI-PATTERNS (do NOT do these):\n- Do NOT generate random numbers and pretend they\
-      \ are experiment results\n- Do NOT use `random.uniform()` to simulate a decreasing loss curve\n- Do NOT hardcode metric\
-      \ values or use trivial arithmetic as metrics\n- Do NOT run a fixed number of iterations without any convergence check\n- Do NOT implement convergence_rate or similar metrics as dummy return values\n  (e.g. returning 1.0 or a constant) — measure actual iterations to convergence\n- If you report convergence_rate, define it as iterations_to_convergence / max_iterations\n  or similar — it MUST differ between algorithms\n\nExperiment plan:\n{exp_plan}"
+    user: |
+      Generate a Python experiment project for the following research topic:
+      TOPIC: {topic}
+
+      CRITICAL REQUIREMENTS — your code MUST satisfy ALL of these:
+      1. Implement REAL algorithms with real mathematical operations (no fake random-score loops).
+      2. Match the topic and experiment plan. Do NOT default to generic optimizer templates.
+      3. Run controlled comparisons across conditions with deterministic seeds.
+      4. Emit robust, parseable metrics and save structured outputs.
+
+      OUTPUT FORMAT (MANDATORY): return multiple files using exactly this format:
+      ```filename:main.py
+      # entry point code
+      ```
+
+      ```filename:models.py
+      # model/algorithm implementations
+      ```
+
+      CODE STRUCTURE REQUIREMENTS:
+      - `main.py` runs experiments and prints metrics.
+      - Primary metric key: {metric}
+      - Print metric lines as `name: value` (one per line).
+      - Print at least one `{metric}: <float>` line.
+      - For each condition, print `condition=<name> {metric}: <float>`.
+      - Print aggregate lines `{metric}_mean: <float>` and `{metric}_std: <float>`.
+      - Write `results.json` with top-level `metrics` dict containing `{metric}`.
+      - Use deterministic seeds (`numpy.random.seed` or `random.seed`).
+      - No external data files, no network calls, no GPU required.
+      - FORBIDDEN: subprocess, os.system, eval, exec, shutil, socket.
+
+      ALGORITHM CLASS QUALITY (CRITICAL):
+      - Every algorithm class must implement `__init__` + one core method (`forward`, `train_step`, `predict`, or `step`).
+      - Do NOT emit empty/trivial classes.
+      - Do NOT emit decorative classes (`Experiment`, `Evaluation`, `Training`, `Model`) unless each has distinct logic.
+      - If two classes represent different methods, their core-method logic must be materially different.
+
+      ANTI-PATTERNS (do NOT do these):
+      - random-number placeholders presented as experimental results
+      - hardcoded metrics
+      - copy-paste class variants with identical method signatures/body
+      - missing condition-level metrics
+
+      {pkg_hint}
+
+      Experiment plan:
+      {exp_plan}
   experiment_design:
     system: You are a principal investigator designing ML experiments.
     user: '{preamble}
@@ -487,6 +517,21 @@ sub_prompts:
       Metric direction: {metric_direction}
 
       Do not use subprocess, os.system, eval, exec, or any network/shell calls.
+
+      CRITICAL OUTPUT CONTRACT:
+      - Return runnable Python files only (no prose).
+      - Ensure `main.py` prints parseable metric lines in `name: value` format.
+      - Print at least one `{metric_key}: <float>` line.
+      - Print per-condition lines: `condition=<name> {metric_key}: <float>`.
+      - Write `results.json` with top-level `metrics` object containing `{metric_key}`.
+
+      CODE QUALITY CONTRACT:
+      - Every algorithm class must have `__init__` plus one core method (`forward`/`train_step`/`predict`/`step`).
+      - Remove duplicate copy-paste classes with identical method signatures.
+      - Keep class set minimal and intentional; avoid decorative wrappers.
+
+      If previous iterations had no metrics, prioritize reliability over novelty:
+      keep experiments small, deterministic, and guaranteed to emit `{metric_key}`.
 
       Current project files:
 
