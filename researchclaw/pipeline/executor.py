@@ -542,13 +542,13 @@ def _chat_with_prompt(
 
 
 def _generate_neurips_checklist(
+    *,
     has_experiments: bool = True,
     has_theory: bool = False,
     has_code: bool = True,
 ) -> str:
     """Generate a NeurIPS-style paper checklist appendix in markdown.
 
-    This checklist is based on the NeurIPS 2025 submission requirements.
     It is appended to the paper before LaTeX conversion.
     """
     items = [
@@ -560,7 +560,6 @@ def _generate_neurips_checklist(
             ("Theory", "Are all assumptions stated and proofs included?", "Yes")
         )
     items.extend([
-        ("Experiments reproducibility", "Does the paper fully disclose experimental settings?", "Yes" if has_experiments else "NA"),
         ("Code and data", "Is code or data provided for reproducibility?", "Yes" if has_code else "No"),
         ("Experimental details", "Are training details and hyperparameters specified?", "Yes" if has_experiments else "NA"),
         ("Error bars", "Are error bars or confidence intervals reported?", "Yes" if has_experiments else "NA"),
@@ -3266,7 +3265,7 @@ def _execute_code_generation(
         )
         _contract_resp = _chat_with_prompt(
             llm,
-            _pm.prompts["code_generation"]["system"],
+            _pm.system("code_generation"),
             _contract_prompt,
             max_tokens=_code_max_tokens,
         )
@@ -3456,7 +3455,7 @@ def _execute_code_generation(
         try:
             repair_resp = _chat_with_prompt(
                 llm,
-                _pm.prompts["code_generation"]["system"],
+                _pm.system("code_generation"),
                 repair_prompt,
                 max_tokens=_code_max_tokens,
             )
@@ -3591,7 +3590,7 @@ def _execute_code_generation(
                     try:
                         fix_resp = _chat_with_prompt(
                             llm,
-                            _pm.prompts["code_generation"]["system"],
+                            _pm.system("code_generation"),
                             fix_prompt,
                             max_tokens=_code_max_tokens,
                         )
@@ -3666,7 +3665,7 @@ def _execute_code_generation(
                 )
                 regen_resp = _chat_with_prompt(
                     llm,
-                    system=_pm.prompts["code_generation"]["system"],
+                    system=_pm.system("code_generation"),
                     user=regen_prompt,
                     max_tokens=_code_max_tokens,
                 )
