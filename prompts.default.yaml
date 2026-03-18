@@ -98,7 +98,40 @@ stages:
 
       Design an experiment plan as YAML.
 
-      Required keys: objectives,datasets,baselines,proposed_methods,ablations,metrics,risks,compute_budget.
+      OUTPUT RULES (STRICT):
+      - Output ONLY YAML. No markdown fences. No commentary.
+      - Use exactly these top-level keys in this order:
+        objectives, datasets, baselines, proposed_methods, ablations, metrics, risks, compute_budget.
+      - For list keys, provide 2-5 items each.
+      - List items must be plain scalars (NO quotes), <= 160 chars each.
+      - compute_budget must be a mapping with only max_gpu and max_hours as integers.
+      - Do NOT include colons inside list items unless required by a standard metric name.
+
+      REQUIRED YAML SHAPE (follow exactly):
+      objectives:
+        - objective_1
+        - objective_2
+      datasets:
+        - dataset_1
+        - dataset_2
+      baselines:
+        - baseline_1
+        - baseline_2
+      proposed_methods:
+        - method_1
+        - method_2
+      ablations:
+        - ablation_1
+        - ablation_2
+      metrics:
+        - metric_1
+        - metric_2
+      risks:
+        - risk_1
+        - risk_2
+      compute_budget:
+        max_gpu: 1
+        max_hours: 4
 
       Hypotheses:
 
