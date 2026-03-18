@@ -144,6 +144,26 @@ def test_parse_experiment_plan_yaml_handles_bare_language_tag_line() -> None:
     assert parsed.get("objectives") == ["test objective"]
 
 
+def test_parse_experiment_plan_yaml_recovers_from_unbalanced_quotes() -> None:
+    text = (
+        "```yaml\n"
+        "objectives:\n"
+        "  - \"Hypothesis 1 (Foundational Viability): Test if FoT outperforms baseline\n"
+        "datasets:\n"
+        "  - cifar10\n"
+        "baselines:\n"
+        "  - autoregressive_direct\n"
+        "proposed_methods:\n"
+        "  - flow_of_thought\n"
+        "```\n"
+    )
+    parsed = rc_executor._parse_experiment_plan_yaml(text)
+    assert isinstance(parsed, dict)
+    assert parsed.get("objectives")
+    assert parsed.get("datasets") == ["cifar10"]
+    assert parsed.get("baselines") == ["autoregressive_direct"]
+
+
 @pytest.mark.parametrize(
     ("payload", "default", "expected"),
     [

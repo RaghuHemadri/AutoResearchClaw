@@ -295,6 +295,114 @@ def _strip_leading_yaml_language_tag(text: str) -> str:
     return stripped
 
 
+def _normalize_yaml_scalar(value: str) -> str:
+    """Normalize scalar text from loose YAML parsing.
+
+    Handles common malformed quoting patterns from LLM output.
+    """
+    v = value.strip()
+    if not v:
+        return ""
+
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in {"\"", "'"}:
+        return v[1:-1].strip()
+    if v[0] in {"\"", "'"} and v[-1] not in {"\"", "'"}:
+        return v[1:].strip()
+    if v[-1] in {"\"", "'"} and v[0] not in {"\"", "'"}:
+        return v[:-1].strip()
+    return v
+
+
+def _coerce_yaml_scalar(value: str) -> Any:
+    """Coerce basic YAML scalar types from text."""
+    v = _normalize_yaml_scalar(value)
+    if not v:
+        return ""
+    lower = v.lower()
+    if lower in {"true", "false"}:
+        return lower == "true"
+    if re.fullmatch(r"-?\d+", v):
+        try:
+            return int(v)
+        except ValueError:
+            return v
+    if re.fullmatch(r"-?\d+\.\d+", v):
+        try:
+            return float(v)
+        except ValueError:
+            return v
+    return v
+
+
+def _parse_experiment_plan_yaml_loose(text: str) -> dict[str, Any] | None:
+    """Best-effort parser for partially malformed YAML-like output.
+
+    Designed for responses where a single malformed quoted list item causes
+    full YAML parsing to fail.
+    """
+    allowed_keys = {
+        "baselines",
+        "proposed_methods",
+        "ablations",
+        "datasets",
+        "metrics",
+        "objectives",
+        "risks",
+        "compute_budget",
+    }
+    list_keys = allowed_keys - {"compute_budget"}
+
+    out: dict[str, Any] = {}
+    current_key: str | None = None
+
+    cleaned = _strip_leading_yaml_language_tag(text)
+    for raw_line in cleaned.splitlines():
+        line = raw_line.rstrip()
+        if not line or line.lstrip().startswith("```"):
+            continue
+
+        top = re.match(r"^\s*([a-zA-Z_][\w-]*)\s*:\s*(.*)$", line)
+        if top:
+            key = top.group(1).strip().lower()
+            tail = top.group(2).strip()
+            if key in allowed_keys:
+                current_key = key
+                if key in list_keys:
+                    out.setdefault(key, [])
+                    if tail:
+                        parsed_tail = _safe_json_loads(tail, None)
+                        if isinstance(parsed_tail, list):
+                            out[key].extend(str(item) for item in parsed_tail)
+                        else:
+                            out[key].append(_normalize_yaml_scalar(tail))
+                else:
+                    out.setdefault("compute_budget", {})
+                    if tail:
+                        parsed_tail = _safe_json_loads(tail, None)
+                        if isinstance(parsed_tail, dict):
+                            out["compute_budget"].update(parsed_tail)
+                continue
+
+        if current_key in list_keys:
+            item = re.match(r"^\s*-\s*(.+)$", line)
+            if item:
+                out.setdefault(current_key, [])
+                out[current_key].append(_normalize_yaml_scalar(item.group(1)))
+                continue
+
+        if current_key == "compute_budget":
+            kv = re.match(r"^\s*([a-zA-Z_][\w-]*)\s*:\s*(.+)$", line)
+            if kv:
+                out.setdefault("compute_budget", {})
+                out["compute_budget"][kv.group(1)] = _coerce_yaml_scalar(kv.group(2))
+
+    for key in list_keys:
+        if key in out:
+            out[key] = [str(item).strip() for item in out[key] if str(item).strip()]
+
+    return out if out else None
+
+
 def _parse_experiment_plan_yaml(text: str) -> dict[str, Any] | None:
     """Parse experiment-plan YAML from noisy LLM output.
 
@@ -340,6 +448,12 @@ def _parse_experiment_plan_yaml(text: str) -> dict[str, Any] | None:
             continue
         if isinstance(parsed, dict):
             return parsed
+
+    # Final fallback: recover key sections and list items even if YAML is malformed.
+    for candidate in candidates:
+        parsed_loose = _parse_experiment_plan_yaml_loose(candidate)
+        if isinstance(parsed_loose, dict):
+            return parsed_loose
     return None
 
 
